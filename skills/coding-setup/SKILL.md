@@ -1,0 +1,254 @@
+---
+name: coding-setup
+description: Set up Claude for software development — installs Superpowers, configures an iterative coding workflow (brainstorm → plan → subagents → review → commit), and generates CLAUDE.md, AGENTS.md, and settings.json tailored to your stack.
+---
+
+# Coding Setup
+
+This skill sets up Claude Code for professional software development using a proven iterative workflow.
+
+**Handoff context:** Read `skills/_shared/consume-handoff.md` and run it with the handoff block (if any). The helper guarantees the following locals: `detected_language`, `existing_claude_md`, `inferred_use_case`, `repo_signals`, `graphify_candidate`. Use `detected_language` for all user-facing prose; generated file content stays in English.
+
+**Existing CLAUDE.md:** If `existing_claude_md: true`, DO NOT overwrite it. Append a new delimited section at the end of the file:
+
+```
+<!-- onboarding-agent:start setup=coding skill=coding-setup section=claude-md -->
+## Claude Onboarding Agent — Coding Setup
+...generated content...
+<!-- onboarding-agent:end -->
+```
+
+If the delimited block already exists from a previous run, replace only the content between the markers; leave the rest of the file untouched. Use the same marker pattern (`# onboarding-agent: coding — start` / `— end`) around generated `.gitignore` blocks so `/upgrade-setup` can refresh them non-destructively.
+
+## Supporting Files
+
+Read these on-demand at the step that invokes them. Do not read eagerly.
+
+- `skills/_shared/consume-handoff.md` — orchestrator handoff parse + inline fallback (preamble, before Step 1)
+- `skills/_shared/offer-superpowers.md` — canonical Superpowers opt-in and install (Step 1)
+- `skills/_shared/offer-github-mcp.md` — canonical GitHub MCP offer (Step 4)
+- `skills/_shared/offer-graphify.md` — canonical Graphify opt-in (Step 7)
+- `skills/_shared/gitignore-python.md`, `skills/_shared/gitignore-node.md`, `skills/_shared/gitignore-common.md` — canonical `.gitignore` blocks (Step 5)
+
+## Step 1: Install Dependencies
+
+Read `skills/_shared/offer-superpowers.md` and run it with `skill_slug: coding-setup`, `mandatory: true`. The helper delegates to `skills/_shared/installation-protocol.md` and sets `superpowers_installed`, `superpowers_scope`, `superpowers_method`.
+
+## Step 2: Context Questions
+
+Ask these 2 questions one at a time. Wait for each answer before asking the next:
+
+1. "What is your primary programming language or tech stack? (e.g., Python, TypeScript/React, Go, Rust)"
+2. "Which IDE or editor do you use? (VS Code / JetBrains / Neovim / other)"
+
+## Step 3: Offer Project-Local Subagent
+
+Read `skills/_shared/emit-subagent.md` and follow it with these inputs:
+
+- `slug`: `code-reviewer`
+- `purpose_blurb`: "Review a PR-sized diff (uncommitted, staged, or a named commit range) against the project's code standards."
+- `frontmatter_description`: "Use to review uncommitted diffs, staged changes, or a named commit range against the project's code standards and conventions. Dispatch when the user asks for a code review, wants feedback on a change, or says 'review this' / 'check my changes' / 'review my diff'."
+- `tools_list`: `Bash, Read, Grep, Glob`
+- `rules_files`: (none — this subagent relies on CLAUDE.md's code standards)
+- `body_markdown`:
+
+  ```
+  You are the Code Reviewer. You review a bounded diff against the project's code standards and conventions documented in CLAUDE.md.
+
+  ## Procedure
+  1. Determine the diff scope from the caller's request (uncommitted changes, staged only, a named commit range, or a specific file list). If ambiguous, ask once; otherwise proceed with `git diff` on uncommitted + staged.
+  2. Read CLAUDE.md for project context and standards.
+  3. Review the diff. Flag: YAGNI violations, speculative abstractions, missing validation at boundaries, error-handling for impossible scenarios, test coverage gaps, convention drift.
+  4. Return a structured verdict: one-line summary, bullet list of findings (severity: blocker / suggestion / nit), and a final recommendation (ship / revise / block).
+
+  ## Rules
+  - Do not write code. Your output is feedback, not a fix.
+  - Do not run tests or linters on the caller's behalf unless explicitly asked.
+  - Cite file:line for every finding.
+  ```
+
+Record the emit outcome (`emit_subagent`, `subagent_skipped_existing`, `subagent_deferred`) for use in the completion summary (Step 10). If `emit_subagent: true`, add `"code-reviewer"` to the list passed to `skills/_shared/write-meta.md` in Step 8 as `subagents_installed`.
+
+## Step 4: Offer GitHub MCP (conditional)
+
+Read `skills/_shared/offer-github-mcp.md` and run it with `skill_slug: coding-setup`. The helper carries the canonical trigger condition, install command, auth details, and pointer link, and sets `github_installed` (and `github_deferred` on `later`) for the CLAUDE.md generator and completion summary.
+
+## Step 5: Generate Artifacts
+
+Generate the following files automatically:
+
+### CLAUDE.md
+
+```markdown
+# Claude Instructions
+
+## Project Context
+[Stack from Q1] project. IDE: [Q2 answer].[If `git remote -v` reveals a recognizable host (github.com / gitlab.com / bitbucket.org), append ` Git host: <host>.`; otherwise omit the sentence.]
+
+## Development Workflow
+[Include this entire section ONLY if superpowers_installed is true]
+
+At the start of every new conversation, invoke the `using-superpowers` skill.
+
+Follow this iterative workflow for all features and bug fixes:
+1. **Brainstorm** — use `superpowers:brainstorming` to explore requirements before writing any code
+2. **Plan** — use `superpowers:writing-plans` to create a step-by-step implementation plan
+3. **Implement** — use `superpowers:subagent-driven-development` to dispatch subagents per task
+4. **Review** — use `superpowers:requesting-code-review` before merging
+5. **Commit** — atomic commits with descriptive messages after each verified task
+
+## Code Standards
+- Write minimal code. YAGNI: do not add features not explicitly requested.
+- No speculative abstractions. Three similar lines beat a premature helper.
+- Validate only at system boundaries (user input, external APIs).
+- No error handling for scenarios that cannot happen.
+
+## Testing
+- Write tests before implementation (TDD).
+- Tests must run against real dependencies — avoid mocks unless unavoidable.
+
+[Include ONLY if github_installed is true OR github_deferred is true — emitted per skills/_shared/offer-mcp.md Step 5]
+## Configured MCP servers
+- github: [see _shared/offer-mcp.md Step 5 for the exact per-state line format]
+```
+
+Adapt the "Project Context" section based on the detected stack:
+- Python → mention `uv` as package manager if applicable
+- Node/TypeScript → mention npm/yarn/pnpm as appropriate
+- Go/Rust → note the standard build tools
+
+### AGENTS.md
+
+```markdown
+# Agent Roles
+
+## coder
+Implements features and bug fixes. Works from a written plan. Makes atomic commits after each verified task. Does not refactor code unrelated to the current task.
+
+## reviewer
+Reviews code changes against the implementation plan and coding standards. Checks for correctness, security (OWASP Top 10), and spec alignment. Returns a list of issues with severity (critical/minor).
+
+## git-agent
+Handles all git operations: staging, committing, pushing. Writes descriptive commit messages. Never force-pushes to main. Confirms before any destructive git operation.
+```
+
+### .claude/settings.json
+
+Create `.claude/settings.json` with stack-appropriate tool permissions:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)"
+    ]
+  }
+}
+```
+
+Extend the `allow` list based on detected stack:
+- Python → add `"Bash(uv *)"`, `"Bash(python *)"`, `"Bash(pytest *)"`
+- Node/TypeScript → add `"Bash(npm *)"`, `"Bash(node *)"`, `"Bash(npx *)"`
+- Go → add `"Bash(go *)"`
+- Rust → add `"Bash(cargo *)"`
+
+### .gitignore
+
+Generate a `.gitignore` appropriate for the detected stack. Always include the common block from `skills/_shared/gitignore-common.md`, then append the stack-specific block:
+
+- Python → read `skills/_shared/gitignore-python.md` and append its block
+- Node / TypeScript → read `skills/_shared/gitignore-node.md` and append its block
+- Go → append `*.exe`, `*.test`, `vendor/`
+- Rust → append `target/`
+- Generic fallback → nothing beyond the common block
+
+Wrap the generated block in `# onboarding-agent: coding — start` / `— end` markers so `/upgrade-setup` can refresh it non-destructively.
+
+## Step 6: Optional Community Skills
+
+> "Would you like to install additional community skills?
+>
+> A) frontend-design (official Anthropic) — avoids AI-generic UI, bold design decisions (popular official plugin)
+> B) mcp-builder — create MCP servers for external API integrations
+> C) webapp-testing — Playwright-based UI testing
+> D) security-suite — Trail of Bits CodeQL/Semgrep analysis
+> E) All of the above
+> F) None
+>
+> (Multiple selections via comma, e.g. 'A, C')"
+
+For each selected skill, run: `/plugin install <skill>@claude-plugins-official`
+
+On failure for any skill: warn clearly ("⚠ Could not install [skill] — skipping. Install manually later.") and continue. Never block the setup.
+
+Add the list of successfully installed optional skills to the Completion Summary under a new line: `Optional community skills: [list or "none selected"]`
+
+## Step 7: Optional Graphify Integration
+
+Read `skills/_shared/offer-graphify.md` and run it with:
+
+- `host_setup_slug: "coding"`
+- `host_skill_slug: "coding-setup"`
+- `run_initial_build: true`
+- `install_git_hook: true`
+- `corpus_blurb: "your project (code via tree-sitter for 25 languages, plus Markdown, PDFs, diagrams, images, audio/video)"`
+
+The helper owns the opt-in prompt and the three-way branch (yes / no / later),
+delegating to `skills/_shared/graphify-install.md`. Record the `graphify_*`
+variables it produces for use in Step 10.
+
+## Step 8: Write Upgrade Metadata
+
+Set `setup_slug: coding`, `skill_slug: coding-setup`. Resolve `plugin_version` from the plugin's own `plugin.json`. If Step 3 emitted the `code-reviewer` subagent, set `subagents_installed: ["code-reviewer"]`; otherwise leave it unset (the helper treats it as an empty list). Then follow `skills/_shared/write-meta.md` to create or merge `./.claude/onboarding-meta.json`. If Step 7 installed Graphify, `skills_used` will automatically pick up `graphify-setup` via the shared protocol's own write-meta call — this step records `coding-setup` alongside it.
+
+## Step 9: Render Anchor Sections
+
+Read `skills/_shared/anchor-mapping.md`. Locate the row for `setup_type: coding`. For each anchor slug in that row:
+
+1. Call `skills/_shared/render-anchor-section.md` with:
+   - `setup_type: coding`
+   - `skill_slug: coding-setup`
+   - `anchor_slug: <slug>`
+   - `target_file: ./CLAUDE.md`
+   - `fallback_content: <embedded fallback from skills/anchors/SKILL.md for that slug>`
+2. If a `./AGENTS.md` file was generated earlier in this skill, repeat the call with `target_file: ./AGENTS.md`.
+
+Do not fail if any single `render-anchor-section.md` call returns `placeholder` — that is the designed offline path. Collect the list of rendered / placeholder slugs to mention in the completion summary.
+
+For every call, also capture `render_freshness`. When it is anything other than `network` or `cache` (i.e. `fallback` or `embedded`), record the `(anchor_slug, render_freshness)` pair in `anchor_freshness_notes`. The completion summary's `Anchor freshness` line consumes this list.
+
+## Step 10: Completion Summary
+
+```
+✓ Coding setup complete! Here's what was configured:
+
+Files created:
+  CLAUDE.md                     — project context + [workflow instructions / ⚠ omitted — Superpowers not installed]
+  AGENTS.md                     — coder, reviewer, and git-agent role definitions
+  .claude/settings.json         — tool permissions for [stack]
+  .gitignore                    — [stack]-appropriate ignore rules
+  .claude/agents/code-reviewer.md — project-local subagent (auto-invoked) [only on yes path; if skipped existing: .claude/agents/code-reviewer.md (already existed — skipped; re-run /checkup --rebuild to regenerate); if no/later: Subagent code-reviewer not installed — re-run /coding-setup to add it later.]
+  .claude/onboarding-meta.json  — setup marker for /upgrade-setup
+
+External skills:
+  [✓ Superpowers installed via superpowers_method (superpowers_scope)]
+  [⚠ Superpowers installation failed — install manually: https://github.com/obra/superpowers]
+
+Optional community skills: [list of installed skills, or "none selected"]
+
+Graphify (knowledge graph):
+  [✓ installed via <installer>, /graphify + PreToolUse hook registered | ⚠ installed but hook not verified — run /graphify in a new session | — skipped: <reason> | — deferred: run /graphify-setup when ready | — not offered]
+
+MCP servers:
+  [one line per MCP considered, formatted per skills/_shared/offer-mcp.md Step 6 — omit if github trigger condition was false]
+
+Anchor freshness:
+  [omit the whole block if anchor_freshness_notes is empty; otherwise one line per entry:
+   Anchor <anchor_slug> served from <render_freshness> — consider running /anchors to refresh.]
+
+Next steps:
+  Start a new Claude session and run: /superpowers:using-superpowers
+  Then try: /superpowers:brainstorming "describe your first feature"
+  [If Graphify installed] Try: /graphify query "where does auth happen in this repo?"
+  - Run `/anchors` any time to refresh the anchor-derived sections. If any section was rendered as a placeholder due to offline mode, re-run `/anchors` once you are back online.
+```
